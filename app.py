@@ -19,7 +19,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# 💡 V97 核心進化：自動從後台讀取密鑰，完全隱藏真實 Key
 try:
     fugle_key = st.secrets["general"]["fugle_key"]
 except (KeyError, FileNotFoundError):
@@ -53,14 +52,16 @@ LEADERS = ["2330", "2317", "3450", "4979", "3037", "2383", "3017", "2308", "2327
 
 # ================= 3. 富果 API 核心數據引擎 =================
 def fetch_fugle_kline(symbol, api_key):
+    """💡 V98 修正：精準讀取富果資料包中的 'data' 鍵值"""
     try:
         headers = {"X-API-KEY": api_key}
         url = f"https://api.fugle.tw/marketdata/v1.0/stock/historical/candles/{symbol}"
         res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
-            if 'candles' in data and data['candles']:
-                df = pd.DataFrame(data['candles'])
+            # 就是這裡！富果的歷史 K 線名稱是 'data'，不是 'candles'
+            if 'data' in data and data['data']:
+                df = pd.DataFrame(data['data'])
                 df = df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume', 'date': 'Date'})
                 df['Date'] = pd.to_datetime(df['Date'])
                 df = df.sort_values('Date').reset_index(drop=True)
@@ -95,6 +96,9 @@ def get_all_stock_data(stock_dict, api_key):
     
     for symbol, name in stock_dict.items():
         hist = fetch_fugle_kline(symbol, api_key)
+        # 💡 加入 0.6 秒的間隔，防止超過富果 60次/分鐘 的免費限制
+        time.sleep(0.6) 
+        
         if hist.empty or len(hist) < 15: continue
         
         try:
@@ -154,7 +158,7 @@ def get_all_stock_data(stock_dict, api_key):
 # ================= 4. UI 介面佈局 =================
 st.title("概覽")
 
-with st.spinner("🚀 正在經由 富果(Fugle) 安全隧道初始化全台股題材庫..."):
+with st.spinner("🚀 正在經由 富果(Fugle) API 讀取台股大數據 (因遵守防封鎖限制，約需 40~50 秒，請耐心等候)..."):
     flat_dict = {sym: name for t in STOCK_DB.values() for sym, name in t.items()}
     df_all, hist_all = get_all_stock_data(flat_dict, fugle_key)
 
@@ -171,7 +175,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-# --- 區塊 2：大盤動態區 (靜態安全鎖) ---
+# --- 區塊 2：大盤動態區 ---
 st.markdown("##### 大盤動態")
 col_i1, col_i2, col_i3, col_i4 = st.columns(4)
 col_i1.markdown('<div class="metric-card"><div style="color:#718096;font-size:14px;">加權指數</div><div style="font-size:24px;font-weight:bold;color:#1a202c;margin:5px 0;">22,430.15</div><div style="color:#ff4b4b;font-size:14px;font-weight:bold;">▲ 0.85%</div></div>', unsafe_allow_html=True)
