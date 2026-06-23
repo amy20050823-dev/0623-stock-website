@@ -19,10 +19,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# 💡 V97 核心進化：自動從後台讀取密鑰，完全隱藏真實 Key
+try:
+    fugle_key = st.secrets["general"]["fugle_key"]
+except (KeyError, FileNotFoundError):
+    st.error("⚠️ 系統偵測到未設定 API Key！請至 Streamlit 後台的 Settings -> Secrets 進行設定。")
+    st.stop()
+
 if 'custom_themes' not in st.session_state:
     st.session_state['custom_themes'] = {}
 
-# ================= 2. 核心資料庫 (富果格式：純數字) =================
+# ================= 2. 核心資料庫 =================
 BASE_STOCK_DB = {
     "AI伺服器": {"2330": "台積電", "2317": "鴻海", "2382": "廣達", "3231": "緯創", "2376": "技嘉", "6669": "緯穎", "3706": "神達", "2356": "英業達"},
     "散熱與水冷": {"3017": "奇鋐", "3324": "雙鴻", "2421": "建準", "8996": "高力", "3483": "力致", "3653": "健策"},
@@ -45,16 +52,15 @@ SYMBOL_TO_THEME = {sym: theme for theme, stocks in STOCK_DB.items() for sym in s
 LEADERS = ["2330", "2317", "3450", "4979", "3037", "2383", "3017", "2308", "2327", "2454", "3661"]
 
 # ================= 3. 富果 API 核心數據引擎 =================
-def fetch_fugle_kline(symbol):
-    """💡 終極秘密武器：串接富果官方開放 K 線 API，徹底告別封鎖"""
+def fetch_fugle_kline(symbol, api_key):
     try:
+        headers = {"X-API-KEY": api_key}
         url = f"https://api.fugle.tw/marketdata/v1.0/stock/historical/candles/{symbol}"
-        res = requests.get(url, timeout=5)
+        res = requests.get(url, headers=headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
             if 'candles' in data and data['candles']:
                 df = pd.DataFrame(data['candles'])
-                # 富果欄位轉換為系統格式
                 df = df.rename(columns={'open': 'Open', 'high': 'High', 'low': 'Low', 'close': 'Close', 'volume': 'Volume', 'date': 'Date'})
                 df['Date'] = pd.to_datetime(df['Date'])
                 df = df.sort_values('Date').reset_index(drop=True)
@@ -63,26 +69,17 @@ def fetch_fugle_kline(symbol):
     except: pass
     return pd.DataFrame()
 
-def get_tw_stock_name(symbol):
-    try:
-        url = f"https://tw.stock.yahoo.com/quote/{symbol}"
-        res = requests.get(url, headers={'User-Agent':'Mozilla/5.0'}, timeout=3)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        title = soup.find('title').text
-        return title.split('(')[0].strip() if title else f"自選_{symbol}"
-    except: return f"自選_{symbol}"
-
 @st.cache_data(ttl=1800)
 def get_market_summary_and_tags():
     try:
-        url_tw = "https://news.google.com/rss/search?q=台股+OR+半導體+OR+外資&hl=zh-TW&gl=TW&ceid=TW:zh-Hant"
+        url_tw = "https://tw.news.yahoo.com/rss/stock"
         res = requests.get(url_tw, headers={'User-Agent':'Mozilla/5.0'}, timeout=5)
         soup = BeautifulSoup(res.text, 'xml')
-        titles = [item.title.text.split(' - ')[0] for item in soup.find_all('item')[:8]]
+        titles = [item.title.text for item in soup.find_all('item')[:8]]
         if titles:
             summary_text = "今日盤面焦點： " + "；".join(titles[:3]) + "。資金輪動快速，建議留意籌碼與月線防守。"
             all_text = "".join(titles)
-            keywords = ["台積電", "AI", "外資", "散熱", "鴻海", "聯發科", "降息", "營收", "半導體"]
+            keywords = ["台積電", "AI", "外資", "散熱", "鴻海", "聯發科", "降息", "營收", "半導體", "漲停"]
             found_tags = [kw for kw in keywords if kw in all_text]
             tags = found_tags[:4] if found_tags else ["盤整", "觀望"]
         else:
@@ -92,25 +89,12 @@ def get_market_summary_and_tags():
     except:
         return "資金流向觀測中，建議留意權值股動態與均線支撐。", ["台股", "半導體"]
 
-@st.cache_data(ttl=1200)
-def get_indices_html():
-    """💡 由於大盤代號常被鎖，改用網頁網頁網頁萃取法，穩定度 100%"""
-    try:
-        url = "https://tw.stock.yahoo.com/"
-        res = requests.get(url, headers={'User-Agent':'Mozilla/5.0'}, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        # 模擬抓取
-        return 22500.0, 1.2, 470.0, 0.8
-    except:
-        return 22000.0, 0.0, 460.0, 0.0
-
 @st.cache_data(ttl=600)
-def get_all_stock_data(stock_dict):
+def get_all_stock_data(stock_dict, api_key):
     data_list, price_history_dict = [], {}
     
-    # 循序抓取富果資料，富果完全不封鎖 IP
     for symbol, name in stock_dict.items():
-        hist = fetch_fugle_kline(symbol)
+        hist = fetch_fugle_kline(symbol, api_key)
         if hist.empty or len(hist) < 15: continue
         
         try:
@@ -121,7 +105,6 @@ def get_all_stock_data(stock_dict):
             low_p = float(hist['Low'].iloc[-1])
             change_pct = ((close_p - prev_close) / prev_close) * 100
             
-            # K線影線型態計算
             upper_shadow = high_p - max(open_p, close_p)
             lower_shadow = min(open_p, close_p) - low_p
             body = abs(open_p - close_p)
@@ -131,22 +114,18 @@ def get_all_stock_data(stock_dict):
             elif upper_shadow > body * 1.5 and upper_shadow > lower_shadow: k_pattern = "⚠️ 長上影 (遇壓)"
             elif close_p > open_p and body > (high_p - low_p) * 0.7: k_pattern = "📈 實體紅K"
             
-            # 技術指標
             hist['MA5'] = hist['Close'].rolling(5).mean()
             hist['MA20'] = hist['Close'].rolling(20).mean()
             vol_today = float(hist['Volume'].iloc[-1])
             vol_ma5 = hist['Volume'].rolling(5).mean().iloc[-1]
             
-            # 布林頻寬壓縮
             bb_std = hist['Close'].rolling(20).std().iloc[-1]
             bb_ma20 = hist['MA20'].iloc[-1]
             bb_width = (4 * bb_std) / bb_ma20 if bb_ma20 > 0 else 1.0
             
-            # OBV 能量潮
             obv = (np.sign(hist['Close'].diff()) * hist['Volume']).fillna(0).cumsum()
             obv_up = obv.iloc[-1] > obv.rolling(10).mean().iloc[-1]
             
-            # POC 價位
             try:
                 hist_poc = hist.tail(15).copy()
                 poc_price = (hist_poc['High'].max() + hist_poc['Low'].min()) / 2
@@ -177,7 +156,7 @@ st.title("概覽")
 
 with st.spinner("🚀 正在經由 富果(Fugle) 安全隧道初始化全台股題材庫..."):
     flat_dict = {sym: name for t in STOCK_DB.values() for sym, name in t.items()}
-    df_all, hist_all = get_all_stock_data(flat_dict)
+    df_all, hist_all = get_all_stock_data(flat_dict, fugle_key)
 
 # --- 區塊 1：AI 市場摘要 ---
 summary_text, tags = get_market_summary_and_tags()
@@ -235,6 +214,7 @@ with tab_chart:
             fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
             fig.add_trace(go.Candlestick(x=t_dates, open=h['Open'], high=h['High'], low=h['Low'], close=h['Close'], name='K線'), row=1, col=1)
             fig.add_trace(go.Scatter(x=t_dates, y=h['MA20'], name='20MA(月線)', line=dict(color='#1E90FF')), row=1, col=1)
-            fig.add_trace(go.Bar(x=t_dates, y=h['Volume'], name='成交量'), row=2, col=1)
+            colors = ['#ff4b4b' if r['Close'] >= r['Open'] else '#00cc96' for i, r in h.iterrows()]
+            fig.add_trace(go.Bar(x=t_dates, y=h['Volume'], name='成交量', marker_color=colors), row=2, col=1)
             fig.update_layout(height=500, xaxis_rangeslider_visible=False, margin=dict(t=10, b=10, l=10, r=10))
             st.plotly_chart(fig, use_container_width=True)
